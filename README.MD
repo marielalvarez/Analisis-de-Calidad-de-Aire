@@ -1,1 +1,1 @@
-ola polnesios 
+ola polinesios
