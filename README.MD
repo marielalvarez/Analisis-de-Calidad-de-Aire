@@ -1,7 +1,10 @@
 # Analisis de la Calidad del Air: Consecuencias de la construcción de línea 4 del metro
 VARIABLES DE CONTROL: PRESENTE PASADO Y FUTURO
+
 ESTACIONES: 3
+
 AÑOS: 5
+
 CONTAMINANTES: 6
 
 En manera de scripts:
