@@ -57,6 +57,7 @@ def plotserie(df: pd.DataFrame, columna: str, escala: str = "mes"):
     Devuelve:
         - (fig, axes): Figure y Axes (matriz 3x4 si "mes"; Axes único si "anno").
     """
+    print("Asegurando índice datetime...")
     _df = _ensure_datetime_index(df)
 
     if columna not in _df.columns:
@@ -75,7 +76,7 @@ def plotserie(df: pd.DataFrame, columna: str, escala: str = "mes"):
 
     esc = (escala or "").strip().lower()
     if esc in {"mes", "mensual", "m"}:
-        fig, axes = plt.subplots(3, 4, figsize=(16, 9), sharey=True, constrained_layout=True)
+        fig, axes = plt.subplots(3, 4, figsize=(16, 9), constrained_layout=True)
         axes = axes.ravel()
 
         for m in range(1, 13):
@@ -97,6 +98,14 @@ def plotserie(df: pd.DataFrame, columna: str, escala: str = "mes"):
             for tick in ax.get_xticklabels():
                 tick.set_rotation(45)
 
+            ymin, ymax = sm.min(), sm.max()
+            if ymin == ymax:  # datos constantes → damos un margen fijo
+                ylim_individual = (ymin - abs(ymin) * 0.1 - 1, ymax + abs(ymax) * 0.1 + 1)
+            else:
+                margin = (ymax - ymin) * 0.05
+                ylim_individual = (ymin - margin, ymax + margin)
+            ax.set_ylim(ylim_individual)
+            
         fig.suptitle(f"{columna} — Serie por mes ({year})", fontsize=14)
         return fig, axes.reshape(3, 4)
 
