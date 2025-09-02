@@ -1,3 +1,9 @@
+''' 
+Este módulo contiene funciones para limpiar y unir datos de calidad del aire.
+Solo se usó una vez para cada estación, pero se deja aquí para referencia futura.
+El output esta en datos/datos_por_estacion
+'''
+
 
 import pandas as pd
 from typing import Tuple, Dict, Optional
