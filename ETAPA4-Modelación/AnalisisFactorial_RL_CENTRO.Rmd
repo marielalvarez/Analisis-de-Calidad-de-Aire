@@ -1,0 +1,485 @@
+---
+title: "Analysis Factorial y Regresion logistica - CENTRO"
+author: "Viviana Carrizales Luna"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Funciones
+```{r}
+asignar_etapa <- function(df) {
+  inicio_construccion <- as.Date("2022-08-30")
+  inicio_construccion2 <- as.Date("2024-02-24")
+  
+  df <- df %>% mutate(
+    date = as.Date(date),
+    etapa = case_when(
+      date < inicio_construccion ~ 0,
+      date >= inicio_construccion & date < inicio_construccion2 ~ 1,
+      date >= inicio_construccion2 ~ 2
+    )
+  )
+  
+  return(df)
+}
+
+pruebas_no_parametricas <- function(df, contaminantes, tipo = "independiente", etapa_col = "etapa") {
+  resultados <- data.frame()
+  
+  etapas <- sort(unique(df[[etapa_col]]))
+  
+  for (c in contaminantes) {
+    for (i in 1:(length(etapas)-1)) {
+      for (j in (i+1):length(etapas)) {
+        grupo1 <- na.omit(df[df[[etapa_col]] == etapas[i], c])
+        grupo2 <- na.omit(df[df[[etapa_col]] == etapas[j], c])
+        
+        if (tipo == "independiente") {
+          test <- wilcox.test(grupo1, grupo2, exact = FALSE)  # Mann-Whitney
+        } else if (tipo == "pareado") {
+          n <- min(length(grupo1), length(grupo2))
+          test <- wilcox.test(grupo1[1:n], grupo2[1:n], paired = TRUE)
+        } else {
+          stop("tipo debe ser 'independiente' o 'pareado'")
+        }
+        
+        resultados <- rbind(resultados, data.frame(
+          Contaminante = c,
+          Comparacion = paste(etapas[i], "vs", etapas[j]),
+          Estadistico = test$statistic,
+          p_valor = test$p.value
+        ))
+      }
+    }
+  }
+  
+  return(resultados)
+}
+
+pca_rotado <- function(df, variables, nfactors = 3, rotate = "varimax") {
+  # Estandarizar variables
+  df_scaled <- scale(df[variables])
+  
+  # rotación
+  pca_res <- principal(df_scaled, nfactors = nfactors, rotate = rotate, scores = TRUE)
+  
+  # Cargas
+  cargas <- as.data.frame(pca_res$loadings[, 1:nfactors])
+  colnames(cargas) <- paste0("PC", 1:nfactors)
+  rownames(cargas) <- variables
+  
+  # Scores
+  scores_df <- as.data.frame(pca_res$scores)
+  colnames(scores_df) <- paste0("PC", 1:nfactors)
+  
+  # Unir scores al df original
+  df_out <- df
+  df_out <- cbind(df_out, scores_df)
+  
+  return(list(cargas = cargas, df_out = df_out, pca_obj = pca_res))
+}
+
+segmentar_pc_por_etapa <- function(df, pcs = c("PC1", "PC2", "PC3"), etapa_col = "etapa") {
+  df_seg <- df %>% select(all_of(c(pcs, etapa_col)))
+  return(df_seg)
+}
+
+prueba_kruskal_por_etapa <- function(df, factor) {
+  kruskal.test(as.formula(paste(factor, "~ etapa")), data = df)
+}
+
+```
+main
+```{r}
+library(dplyr)
+library(psych)
+library(ggplot2)
+library(FSA) 
+library(readxl)
+
+df <- read_excel("CENTRO_AVENIDAS.xlsx")
+variables <- c("CO_24h", "PM10_24h", "PM2.5_24h", "SO2_24h", "NO2_24h")
+df <- df %>% select(all_of(c(variables, "date")))
+
+df <- asignar_etapa(df)
+
+# PCA rotado
+pca_res <- pca_rotado(df, variables, nfactors = 3, rotate = "varimax")
+cargas <- pca_res$cargas
+df_scores <- pca_res$df_out
+
+
+df_seg <- segmentar_pc_por_etapa(df_scores, pcs = c("PC1", "PC2", "PC3"))
+
+# Kruskal–Wallis por PC1 y PC2
+res_pc1 <- prueba_kruskal_por_etapa(df_seg, factor = "PC1")
+res_pc2 <- prueba_kruskal_por_etapa(df_seg, factor = "PC2")
+res_pc3 <- prueba_kruskal_por_etapa(df_seg, factor = "PC3")
+
+pca_res
+
+```
+# plot de las time series de contaminantes
+
+```{r}
+# install.packages(c("tidyverse", "viridis"))  # run once if needed
+library(tidyverse)
+library(viridis)   # for colorblind-friendly palette
+
+# --- Ensure there's exactly one Date column named `date` ---
+df2 <- if ("date" %in% names(df)) {
+  df %>% mutate(date = as.Date(date))
+} else {
+  df %>% tibble::rownames_to_column("date") %>% mutate(date = as.Date(date))
+}
+
+# --- Drop data from Jun 2024 onward ---
+df_long <- df2 %>%
+  filter(date < as.Date("2024-06-01")) %>%
+  pivot_longer(
+    cols = -c(date, etapa),   # 👈 excluimos 'date' y 'etapa'
+    names_to = "pollutant",
+    values_to = "value"
+  ) %>%
+  mutate(
+    pollutant = str_replace(pollutant, "_.*", "")  # 👈 reemplaza "SO_24h" -> "SO"
+  )
+
+# --- Plot: all pollutants in one elegant time series ---
+p <- ggplot(df_long, aes(x = date, y = value, color = pollutant)) +
+  geom_line(linewidth = 1.1, alpha = 0.95) +
+  scale_color_viridis_d(name = "Pollutant", end = 0.9,
+                        guide = guide_legend(title.position = "top")) +
+  labs(
+    x = "Date",
+    y = "Concentration (µg/m³)"
+  ) +
+  scale_x_date(date_labels = "%b %Y") +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    plot.subtitle = element_text(size = 11),
+    axis.title = element_text(face = "bold"),
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+p
+
+# Optional: save a high-res image for your report
+ggsave("pollutants_timeseries.png", p, width = 12, height = 6, dpi = 300)
+
+
+```
+```{r}
+R  <- cor(df[variables])
+ev <- eigen(R, symmetric = TRUE, only.values = TRUE)$values
+p  <- length(ev)
+pve <- ev / sum(ev)            # % variance per PC
+cum <- cumsum(pve)
+
+# --- 2) Plot (ggplot2) ---
+library(ggplot2)
+library(scales)
+
+top <- min(12, p)              # show first 12 (or fewer) components
+d <- data.frame(
+  PC     = factor(paste0("PC", seq_len(p)), levels = paste0("PC", seq_len(p))),
+  PVE    = pve,
+  CumPVE = cum
+)
+
+ggplot(d[1:top, ], aes(PC, PVE)) +
+  geom_col(width = 0.7) +
+  geom_point(aes(y = CumPVE), size = 2) +
+  geom_line(aes(y = CumPVE, group = 1), linewidth = 0.6) +
+  geom_text(aes(label = percent(PVE, accuracy = 0.1)),
+            vjust = -0.6, size = 3.2) +
+  geom_hline(yintercept = 1/p, linetype = "dashed", linewidth = 0.35) +
+  annotate("text", x = top - 0.25, y = 1/p + 0.02,
+           label = "Kaiser: λ=1 ⇒ 1/p",
+           size = 3.2, hjust = 1) +
+  scale_y_continuous(labels = percent_format(accuracy = 1),
+                     limits = c(0, 1.05),
+                     expand = expansion(mult = c(0, .02))) +
+  labs(title = "Scree Plot (Correlation Matrix PCA)",
+       subtitle = "Bars: % variance by PC · Line: cumulative %",
+       x = "Principal Component",
+       y = "Proportion of Variance Explained") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold"),
+    axis.title.x = element_text(margin = margin(t = 6)),
+    axis.title.y = element_text(margin = margin(r = 6))
+  )
+
+# --- 3) Save for your report (high-res) ---
+ggsave("scree_corr_matrix_centro.png", width = 8, height = 5, dpi = 300)
+```
+```
+
+
+```{r}
+res_pc3
+```
+```{r}
+df_seg$etapa <- as.factor(df_seg$etapa)
+dunnTest(PC1 ~ etapa, data = df_seg, method = "bonferroni")
+```
+
+```{r}
+df_seg$etapa <- as.factor(df_seg$etapa)
+dunnTest(PC2 ~ etapa, data = df_seg, method = "bonferroni")
+```
+
+```{r}
+df_seg$etapa <- as.factor(df_seg$etapa)
+dunnTest(PC3 ~ etapa, data = df_seg, method = "bonferroni")
+```
+
+
+```{r}
+cargas_df <- as.data.frame(cargas)
+cargas_df$Variable <- rownames(cargas_df)
+
+cargas_long <- cargas_df %>%
+  pivot_longer(cols = starts_with("PC"),
+               names_to = "Component", values_to = "Loading") %>%
+  mutate(Component = recode(Component,
+                            "PC1" = "Factor 1",
+                            "PC2" = "Factor 2",
+                            "PC3" = "Factor 3"))
+
+p_loadings <- ggplot(cargas_long, aes(x = Variable, y = Loading, fill = Component)) +
+  geom_col(position = "dodge") +
+  labs(title = "Aporte de los contaminantes para cada factor",
+       x = "Variables", y = "Loading") +
+  theme_minimal(base_size = 13) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave("pca_loadings_centro.png", p_loadings, width = 10, height = 6, dpi = 300, bg = "transparent")
+
+```
+
+```{r}
+library(tidyverse)
+
+# Reshape, rename, and ensure etapa is categorical
+df_long <- df_scores %>%
+  mutate(etapa = as.factor(etapa)) %>%   # <-- ensure etapa is factor
+  pivot_longer(cols = starts_with("PC"),
+               names_to = "Factor",
+               values_to = "Score") %>%
+  mutate(Factor = recode(Factor,
+                         "PC1" = "Factor 1",
+                         "PC2" = "Factor 2",
+                         "PC3" = "Factor 3"))
+
+# Boxplots by etapa
+p_box <- ggplot(df_long, aes(x = etapa, y = Score, fill = etapa)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = 21, outlier.size = 2) +
+  facet_wrap(~Factor, scales = "free_y") +
+  scale_fill_brewer(palette = "Set2", name = "Etapa") +
+  labs(
+    title = "Distribution of Factor Scores by Etapa",
+    x = "Etapa",
+    y = "Score"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.title   = element_text(face = "bold"),
+    legend.position = "top",
+    legend.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+
+print(p_box)
+
+# Save with transparent background
+ggsave("factor_boxplots_centro.png", p_box, width = 10, height = 6, dpi = 300, bg = "transparent")
+
+
+```
+
+```{r}
+res_pc1
+```
+```{r}
+res_pc2
+```
+
+```{r}
+
+library(dunn.test)
+# Dunn post-hoc para PC1 agrupado por Etapa
+dunn_result <- dunn.test(df_seg$PC1, g = df_seg$etapa, method = "bonferroni")
+
+# Mostrar resultados
+dunn_result
+```
+
+```{r}
+
+library(dunn.test)
+# Dunn post-hoc para PC1 agrupado por Etapa
+dunn_result <- dunn.test(df_seg$PC2, g = df_seg$etapa, method = "bonferroni")
+
+# Mostrar resultados
+dunn_result
+```
+## grafico de intervalos
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(dunn.test)
+
+plot_dunn_ci <- function(df, pc = "PC1", grupo = "etapa", p_adjust = "bonferroni") {
+  df[[grupo]] <- as.factor(df[[grupo]])
+  
+  dunn_res <- dunn.test(df[[pc]], g = df[[grupo]], method = p_adjust)
+  
+  pvals <- data.frame(
+    Comparison = dunn_res$comparisons,
+    P_adj = dunn_res$P.adjusted
+  )
+  
+  # Medias y sd por grupo
+  resumen <- df %>%
+    group_by(.data[[grupo]]) %>%
+    summarise(
+      mean_pc = mean(.data[[pc]], na.rm = TRUE),
+      sd_pc = sd(.data[[pc]], na.rm = TRUE),
+      n = n(),
+      .groups = "drop"
+    )
+  
+  grupos <- levels(df[[grupo]])
+  comparaciones <- t(combn(grupos, 2)) %>% as.data.frame()
+  colnames(comparaciones) <- c("grupo1", "grupo2")
+  
+  # diferencia de medias e IC
+  comparaciones <- comparaciones %>%
+    rowwise() %>%
+    mutate(
+      mean1 = resumen$mean_pc[resumen[[grupo]] == grupo1],
+      mean2 = resumen$mean_pc[resumen[[grupo]] == grupo2],
+      sd1 = resumen$sd_pc[resumen[[grupo]] == grupo1],
+      sd2 = resumen$sd_pc[resumen[[grupo]] == grupo2],
+      n1 = resumen$n[resumen[[grupo]] == grupo1],
+      n2 = resumen$n[resumen[[grupo]] == grupo2],
+      Diff = mean1 - mean2,
+      SE = sqrt(sd1^2 / n1 + sd2^2 / n2),
+      Lower = Diff - 1.96 * SE,
+      Upper = Diff + 1.96 * SE,
+      Comparison = paste(grupo1, "-", grupo2)
+    )
+  
+  # Unir p-valores de Dunn
+  comparaciones <- comparaciones %>%
+    left_join(pvals, by = "Comparison") %>%
+    mutate(Signif = ifelse(P_adj <= 0.05, "*", ""))
+  
+  # Gráfico
+  g <- ggplot(comparaciones, aes(x = Diff, y = Comparison)) +
+    geom_point(size = 3) +
+    geom_errorbarh(aes(xmin = Lower, xmax = Upper), height = 0.2) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    geom_text(aes(label = Signif, x = Upper + 0.1), size = 5) +
+    theme_minimal() +
+    xlab(paste("Diferencia de medias (IC 95%)", pc)) +
+    ylab("Comparaciones") +
+    ggtitle(paste("Comparaciones post-hoc de", pc, "por", grupo)) +
+    theme(plot.title = element_text(hjust = 0.5))
+  
+  return(list(
+    dunn_results = dunn_res,
+    summary_table = comparaciones,
+    plot = g
+  ))
+}
+```
+```{r}
+res_pc1 <- plot_dunn_ci(df_seg, pc = "PC1")
+res_pc1$plot             
+res_pc1$summary_table    
+res_pc1$dunn_results    
+
+```
+
+```{r}
+res_pc2 <- plot_dunn_ci(df_seg, pc = "PC2")
+res_pc2$plot             
+res_pc2$summary_table    
+res_pc2$dunn_results    
+
+```
+
+# regresion logistica
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+
+vars <- c("Factor_1","Factor_2","Factor_3")
+
+df <- df %>%
+  mutate(prob_hat = predict(m, type = "response"),
+         logit_hat = qlogis(pmin(pmax(prob_hat, 1e-6), 1-1e-6)))   # avoid 0/1
+
+cal_mod <- glm(avenida_cerrada ~ logit_hat, family = binomial, data = df)
+
+calibrate_prob <- function(p, mod) {
+  lp <- qlogis(pmin(pmax(p, 1e-6), 1-1e-6))
+  plogis(coef(mod)[1] + coef(mod)[2] * lp)
+}
+
+make_curve <- function(var, n = 200) {
+  others <- setdiff(vars, var)
+  base   <- df %>% summarize(across(all_of(others), ~mean(.x, na.rm = TRUE)))
+  rng    <- range(df[[var]], na.rm = TRUE)
+  x      <- seq(rng[1], rng[2], length.out = n)
+
+  grid <- base[rep(1, n), , drop = FALSE]
+  grid[[var]] <- x
+
+  p_raw <- predict(m, newdata = grid, type = "response")
+
+  tibble(
+    variable = var,
+    x_raw = x,
+    x_std = (x - mean(df[[var]], na.rm = TRUE)) / sd(df[[var]], na.rm = TRUE),
+    p_raw = p_raw,
+    p_cal = calibrate_prob(p_raw, cal_mod)
+  )
+}
+
+curves <- map_dfr(vars, make_curve)
+
+p_cal <- ggplot(curves, aes(x = x_std, y = p_cal, color = variable)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Predicted Probability vs. Factors",
+    x = "Factor value",
+    y = "Probaility",
+    color = "Factor"
+  ) +
+  ylim(0, 1) +
+  theme_minimal(base_size = 12)
+
+print(p_cal)
+
+ggsave("prob_curves_calibrated_centro.png", p_cal, width = 7, height = 5, dpi = 300)
+
+```
+
+
