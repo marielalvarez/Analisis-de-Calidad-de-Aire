@@ -3,24 +3,64 @@ import numpy as np
 from sklearn.impute import KNNImputer
 from fancyimpute import IterativeImputer
 
+import pandas as pd
+import numpy as np
+from sklearn.impute import KNNImputer, IterativeImputer
+from tslearn.metrics import dtw
+
 def imputar_multivariado(df, time_col="date", method="knn"):
     df = df.copy()
     df[time_col] = pd.to_datetime(df[time_col])
     df = df.set_index(time_col).asfreq("H")  # asegurar frecuencia horaria
-    
+
     if method == "knn":
         imputer = KNNImputer(n_neighbors=5)
+        df_imputed = pd.DataFrame(
+            imputer.fit_transform(df),
+            columns=df.columns,
+            index=df.index
+        )
+
     elif method == "mice":
         imputer = IterativeImputer(random_state=42, max_iter=10)
+        df_imputed = pd.DataFrame(
+            imputer.fit_transform(df),
+            columns=df.columns,
+            index=df.index
+        )
+
+    elif method == "dtw":
+        df_imputed = df.copy()
+        for col in df.columns:
+            serie = df[col].values
+            nan_idx = np.where(np.isnan(serie))[0]
+
+            for i in nan_idx:
+                # ventana alrededor de la posición faltante
+                ventana = 24  # por ejemplo 24 horas
+                start = max(0, i-ventana)
+                end = min(len(serie), i+ventana)
+
+                subseq = serie[start:end]
+
+                # buscar vecinos por DTW con subsecuencias válidas
+                candidatos = []
+                for j in range(len(serie)-len(subseq)):
+                    if np.isnan(serie[j:j+len(subseq)]).any():
+                        continue
+                    dist = dtw(subseq, serie[j:j+len(subseq)])
+                    candidatos.append((dist, np.mean(serie[j:j+len(subseq)])))
+
+                if candidatos:
+                    # promedio de los k vecinos más cercanos
+                    candidatos = sorted(candidatos, key=lambda x: x[0])[:5]
+                    df_imputed.iloc[i, df.columns.get_loc(col)] = np.mean([c[1] for c in candidatos])
+
     else:
-        raise ValueError("Método no soportado. Usa 'knn' o 'mice'.")
-    
-    df_imputed = pd.DataFrame(
-        imputer.fit_transform(df),
-        columns=df.columns,
-        index=df.index
-    )
+        raise ValueError("Método no soportado. Usa 'knn', 'mice' o 'dtw'.")
+
     return df_imputed
+
 
 def evaluar_imputacion(original, imputado, lags=[24, 168]):
     scores = {}
